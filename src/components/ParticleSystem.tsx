@@ -277,9 +277,19 @@ export default function ParticleSystem({}: ParticleSystemProps) {
   const [showGallery, setShowGallery] = useState(false);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [presetName, setPresetName] = useState('');
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
 
   const videoRecorderRef = useRef<VideoRecorder>(new VideoRecorder());
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const touchStartRef = useRef<{ x: number; y: number; dist: number } | null>(null);
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
+    };
+    checkMobile();
+  }, []);
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -466,7 +476,45 @@ export default function ParticleSystem({}: ParticleSystemProps) {
       renderer.setSize(window.innerWidth, window.innerHeight);
     };
 
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 1) {
+        touchStartRef.current = {
+          x: e.touches[0].clientX,
+          y: e.touches[0].clientY,
+          dist: 1
+        };
+      } else if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        touchStartRef.current = {
+          x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+          y: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+          dist: Math.sqrt(dx * dx + dy * dy)
+        };
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!touchStartRef.current) return;
+
+      if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const scale = dist / touchStartRef.current.dist;
+        gestureScaleTarget = clamp(scale * 1.5, 0.3, 4.0);
+      }
+    };
+
+    const handleTouchEnd = () => {
+      touchStartRef.current = null;
+      gestureScaleTarget = 1.0;
+    };
+
     window.addEventListener('resize', handleResize);
+    renderer.domElement.addEventListener('touchstart', handleTouchStart);
+    renderer.domElement.addEventListener('touchmove', handleTouchMove);
+    renderer.domElement.addEventListener('touchend', handleTouchEnd);
 
     const startCamera = async () => {
       if (cameraStarted || !videoRef.current) return;
@@ -562,6 +610,9 @@ export default function ParticleSystem({}: ParticleSystemProps) {
     return () => {
       cancelAnimationFrame(animationId);
       window.removeEventListener('resize', handleResize);
+      renderer.domElement.removeEventListener('touchstart', handleTouchStart);
+      renderer.domElement.removeEventListener('touchmove', handleTouchMove);
+      renderer.domElement.removeEventListener('touchend', handleTouchEnd);
       renderer.dispose();
       geom?.dispose();
       mat?.dispose();
@@ -646,38 +697,87 @@ export default function ParticleSystem({}: ParticleSystemProps) {
     <>
       <div ref={mountRef} style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%' }} />
 
+      <button
+        onClick={() => setControlsVisible(!controlsVisible)}
+        style={{
+          position: 'fixed',
+          top: '14px',
+          left: '14px',
+          width: '44px',
+          height: '44px',
+          borderRadius: '50%',
+          border: '1px solid rgba(255,255,255,0.2)',
+          background: 'rgba(18, 24, 38, 0.85)',
+          backdropFilter: 'blur(10px)',
+          color: 'white',
+          fontSize: '20px',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1001,
+          boxShadow: '0 4px 20px rgba(0,0,0,0.4)'
+        }}
+      >
+        {controlsVisible ? '×' : '☰'}
+      </button>
+
       <div style={{
         position: 'fixed',
         top: '14px',
         left: '14px',
-        width: 'min(360px, calc(100vw - 28px))',
-        background: 'rgba(18, 24, 38, 0.72)',
+        width: isMobile ? 'min(320px, calc(100vw - 28px))' : 'min(360px, calc(100vw - 28px))',
+        maxHeight: isMobile ? 'calc(100vh - 28px)' : 'auto',
+        overflowY: isMobile ? 'auto' : 'visible',
+        background: 'rgba(18, 24, 38, 0.85)',
         border: '1px solid rgba(255,255,255,0.10)',
         backdropFilter: 'blur(10px)',
         borderRadius: '14px',
         padding: '12px',
         boxShadow: '0 12px 40px rgba(0,0,0,0.35)',
+        transform: controlsVisible ? 'translateX(0)' : 'translateX(-400px)',
+        opacity: controlsVisible ? 1 : 0,
+        pointerEvents: controlsVisible ? 'auto' : 'none',
+        transition: 'transform 0.3s ease, opacity 0.3s ease',
+        zIndex: 1000,
       }}>
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', justifyContent: 'space-between', margin: '10px 0' }}>
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', justifyContent: 'space-between', margin: '10px 0', marginTop: '50px' }}>
           <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.8)' }}>
             <strong>Gesture Particles</strong>
-            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.68)', lineHeight: '1.35', margin: 0 }}>{status}</div>
+            {!isMobile && <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.68)', lineHeight: '1.35', margin: 0 }}>{status}</div>}
           </div>
-          <button
-            onClick={handleStartCamera}
-            style={{
-              width: '140px',
-              borderRadius: '10px',
-              border: '1px solid rgba(255,255,255,0.12)',
-              background: 'rgba(255,255,255,0.06)',
-              color: 'rgba(255,255,255,0.92)',
-              padding: '10px',
-              cursor: 'pointer'
-            }}
-          >
-            Start Camera
-          </button>
+          {!isMobile && (
+            <button
+              onClick={handleStartCamera}
+              style={{
+                width: '140px',
+                borderRadius: '10px',
+                border: '1px solid rgba(255,255,255,0.12)',
+                background: 'rgba(255,255,255,0.06)',
+                color: 'rgba(255,255,255,0.92)',
+                padding: '10px',
+                cursor: 'pointer',
+                fontSize: '11px'
+              }}
+            >
+              Start Camera
+            </button>
+          )}
         </div>
+
+        {isMobile && (
+          <div style={{
+            fontSize: '11px',
+            color: 'rgba(255,255,255,0.7)',
+            background: 'rgba(100,150,255,0.15)',
+            border: '1px solid rgba(100,150,255,0.3)',
+            borderRadius: '8px',
+            padding: '10px',
+            margin: '10px 0'
+          }}>
+            📱 Touch: Pinch with two fingers to scale particles
+          </div>
+        )}
 
         <div style={{ margin: '12px 0' }}>
           <label style={{ fontSize: '12px', color: 'rgba(255,255,255,0.78)', display: 'block', marginBottom: '8px' }}>Quick Presets</label>
@@ -894,58 +994,70 @@ export default function ParticleSystem({}: ParticleSystemProps) {
           </button>
         </div>
 
-        <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.68)', lineHeight: '1.35', marginTop: '8px' }}>
-          <span style={{
-            display: 'inline-block',
-            fontSize: '11px',
-            padding: '4px 8px',
-            borderRadius: '999px',
-            border: '1px solid rgba(255,255,255,0.12)',
-            background: 'rgba(255,255,255,0.06)',
-            marginRight: '6px',
-            marginTop: '8px'
-          }}>Gesture</span>
-          Pinch (thumb+index) to scale particles.
-          <br />
-          <span style={{
-            display: 'inline-block',
-            fontSize: '11px',
-            padding: '4px 8px',
-            borderRadius: '999px',
-            border: '1px solid rgba(255,255,255,0.12)',
-            background: 'rgba(255,255,255,0.06)',
-            marginRight: '6px',
-            marginTop: '8px'
-          }}>Tip</span>
-          Use good light; keep hand within camera view.
-        </div>
+        {!isMobile && (
+          <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.68)', lineHeight: '1.35', marginTop: '8px' }}>
+            <span style={{
+              display: 'inline-block',
+              fontSize: '10px',
+              padding: '3px 6px',
+              borderRadius: '999px',
+              border: '1px solid rgba(255,255,255,0.12)',
+              background: 'rgba(255,255,255,0.06)',
+              marginRight: '4px',
+              marginTop: '6px'
+            }}>Gesture</span>
+            Pinch (thumb+index) to scale particles.
+            <br />
+            <span style={{
+              display: 'inline-block',
+              fontSize: '10px',
+              padding: '3px 6px',
+              borderRadius: '999px',
+              border: '1px solid rgba(255,255,255,0.12)',
+              background: 'rgba(255,255,255,0.06)',
+              marginRight: '4px',
+              marginTop: '6px'
+            }}>Tip</span>
+            Use good light; keep hand within camera view.
+          </div>
+        )}
       </div>
 
-      <div style={{
-        position: 'fixed',
-        right: '14px',
-        bottom: '14px',
-        width: '160px',
-        aspectRatio: '4 / 3',
-        borderRadius: '12px',
-        border: '1px solid rgba(255,255,255,0.14)',
-        background: 'rgba(255,255,255,0.05)',
-        overflow: 'hidden',
-        opacity: 0.9
-      }}>
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          style={{
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
-            transform: 'scaleX(-1)'
-          }}
-        />
-      </div>
+      {!isMobile && cameraStarted && (
+        <div style={{
+          position: 'fixed',
+          right: '14px',
+          bottom: '14px',
+          width: '160px',
+          aspectRatio: '4 / 3',
+          borderRadius: '12px',
+          border: '1px solid rgba(255,255,255,0.14)',
+          background: 'rgba(255,255,255,0.05)',
+          overflow: 'hidden',
+          opacity: 0.9
+        }}>
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              transform: 'scaleX(-1)'
+            }}
+          />
+        </div>
+      )}
+
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        style={{ display: 'none' }}
+      />
 
       {showGallery && (
         <CommunityGallery
