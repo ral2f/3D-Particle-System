@@ -7,4 +7,15 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['lucide-react'],
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'three': ['three'],
+          'mediapipe': ['@mediapipe/hands', '@mediapipe/camera_utils'],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 1000,
+  },
 });

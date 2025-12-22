@@ -1,7 +1,15 @@
+import ParticleSystem from './components/ParticleSystem';
+
 function App() {
   return (
-    <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-      <p>Start prompting (or editing) to see magic happen :)</p>
+    <div style={{
+      minHeight: '100vh',
+      background: '#0b0f19',
+      margin: 0,
+      padding: 0,
+      overflow: 'hidden'
+    }}>
+      <ParticleSystem />
     </div>
   );
 }
