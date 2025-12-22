@@ -744,25 +744,25 @@ export default function ParticleSystem({}: ParticleSystemProps) {
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center', justifyContent: 'space-between', margin: '10px 0', marginTop: '50px' }}>
           <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.8)' }}>
             <strong>Gesture Particles</strong>
-            {!isMobile && <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.68)', lineHeight: '1.35', margin: 0 }}>{status}</div>}
+            <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.68)', lineHeight: '1.35', margin: 0 }}>{status}</div>
           </div>
-          {!isMobile && (
-            <button
-              onClick={handleStartCamera}
-              style={{
-                width: '140px',
-                borderRadius: '10px',
-                border: '1px solid rgba(255,255,255,0.12)',
-                background: 'rgba(255,255,255,0.06)',
-                color: 'rgba(255,255,255,0.92)',
-                padding: '10px',
-                cursor: 'pointer',
-                fontSize: '11px'
-              }}
-            >
-              Start Camera
-            </button>
-          )}
+          <button
+            onClick={handleStartCamera}
+            disabled={cameraStarted}
+            style={{
+              width: isMobile ? '110px' : '140px',
+              borderRadius: '10px',
+              border: '1px solid rgba(255,255,255,0.12)',
+              background: cameraStarted ? 'rgba(100,255,100,0.15)' : 'rgba(255,255,255,0.06)',
+              color: 'rgba(255,255,255,0.92)',
+              padding: '10px',
+              cursor: cameraStarted ? 'not-allowed' : 'pointer',
+              fontSize: '11px',
+              opacity: cameraStarted ? 0.6 : 1
+            }}
+          >
+            {cameraStarted ? '✓ Camera' : 'Start Camera'}
+          </button>
         </div>
 
         {isMobile && (
@@ -775,7 +775,7 @@ export default function ParticleSystem({}: ParticleSystemProps) {
             padding: '10px',
             margin: '10px 0'
           }}>
-            📱 Touch: Pinch with two fingers to scale particles
+            📱 Use gestures or pinch with two fingers to scale particles
           </div>
         )}
 
@@ -1023,18 +1023,19 @@ export default function ParticleSystem({}: ParticleSystemProps) {
         )}
       </div>
 
-      {!isMobile && cameraStarted && (
+      {cameraStarted && (
         <div style={{
           position: 'fixed',
-          right: '14px',
-          bottom: '14px',
-          width: '160px',
+          right: isMobile ? '14px' : '14px',
+          bottom: isMobile ? '14px' : '14px',
+          width: isMobile ? '120px' : '160px',
           aspectRatio: '4 / 3',
           borderRadius: '12px',
           border: '1px solid rgba(255,255,255,0.14)',
           background: 'rgba(255,255,255,0.05)',
           overflow: 'hidden',
-          opacity: 0.9
+          opacity: 0.9,
+          zIndex: 500
         }}>
           <video
             ref={videoRef}
@@ -1051,13 +1052,15 @@ export default function ParticleSystem({}: ParticleSystemProps) {
         </div>
       )}
 
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        style={{ display: 'none' }}
-      />
+      {!cameraStarted && (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          style={{ display: 'none' }}
+        />
+      )}
 
       {showGallery && (
         <CommunityGallery
