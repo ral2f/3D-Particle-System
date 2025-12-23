@@ -283,6 +283,9 @@ export default function ParticleSystem({}: ParticleSystemProps) {
   const videoRecorderRef = useRef<VideoRecorder>(new VideoRecorder());
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const touchStartRef = useRef<{ x: number; y: number; dist: number } | null>(null);
+  const gestureScaleTargetRef = useRef(1.0);
+  const explodeTargetRef = useRef(0);
+  const rotationTargetRef = useRef(0);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -323,15 +326,10 @@ export default function ParticleSystem({}: ParticleSystemProps) {
     let targetPositions: Float32Array | null = null;
     let velocities: Float32Array | null = null;
     let gestureScale = 1.0;
-    let gestureScaleTarget = 1.0;
     let fireworksT = 0;
     let rainbowT = 0;
     let explodeForce = 0;
-    let explodeTarget = 0;
     let rotationSpeed = 0;
-    let rotationTarget = 0;
-    let mpHands: Hands | null = null;
-    let mpCam: Camera | null = null;
 
     const rebuild = () => {
       if (points) {
@@ -377,9 +375,9 @@ export default function ParticleSystem({}: ParticleSystemProps) {
 
       const dt = Math.min(clock.getDelta(), 0.033);
 
-      gestureScale = lerp(gestureScale, gestureScaleTarget, 0.12);
-      explodeForce = lerp(explodeForce, explodeTarget, 0.08);
-      rotationSpeed = lerp(rotationSpeed, rotationTarget, 0.05);
+      gestureScale = lerp(gestureScale, gestureScaleTargetRef.current, 0.12);
+      explodeForce = lerp(explodeForce, explodeTargetRef.current, 0.08);
+      rotationSpeed = lerp(rotationSpeed, rotationTargetRef.current, 0.05);
 
       if (rainbowMode) {
         rainbowT += dt * 0.5;
@@ -502,107 +500,19 @@ export default function ParticleSystem({}: ParticleSystemProps) {
         const dy = e.touches[0].clientY - e.touches[1].clientY;
         const dist = Math.sqrt(dx * dx + dy * dy);
         const scale = dist / touchStartRef.current.dist;
-        gestureScaleTarget = clamp(scale * 1.5, 0.3, 4.0);
+        gestureScaleTargetRef.current = clamp(scale * 1.5, 0.3, 4.0);
       }
     };
 
     const handleTouchEnd = () => {
       touchStartRef.current = null;
-      gestureScaleTarget = 1.0;
+      gestureScaleTargetRef.current = 1.0;
     };
 
     window.addEventListener('resize', handleResize);
     renderer.domElement.addEventListener('touchstart', handleTouchStart);
     renderer.domElement.addEventListener('touchmove', handleTouchMove);
     renderer.domElement.addEventListener('touchend', handleTouchEnd);
-
-    const startCamera = async () => {
-      if (cameraStarted || !videoRef.current) return;
-
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
-          audio: false
-        });
-        videoRef.current.srcObject = stream;
-
-        mpHands = new Hands({
-          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-        });
-
-        mpHands.setOptions({
-          maxNumHands: 2,
-          modelComplexity: 1,
-          minDetectionConfidence: 0.7,
-          minTrackingConfidence: 0.7
-        });
-
-        mpHands.onResults((results) => {
-          const hands = results.multiHandLandmarks;
-          if (!hands || hands.length === 0) {
-            setStatus("Camera: running • Hand: not detected");
-            gestureScaleTarget = 1.0;
-            explodeTarget = 0;
-            rotationTarget = 0;
-            return;
-          }
-
-          const hand1 = hands[0];
-          let gesture = '';
-
-          if (hands.length === 2) {
-            const hand2 = hands[1];
-            const distance = getTwoHandDistance(hand1, hand2);
-            gestureScaleTarget = lerp(0.5, 3.0, distance * 2);
-            rotationTarget = distance > 0.5 ? 1.5 : 0;
-            gesture = 'Two Hands - Rotate';
-          } else if (isOpenPalm(hand1)) {
-            explodeTarget = 1.5;
-            gestureScaleTarget = 1.8;
-            gesture = 'Open Palm - Explode';
-          } else if (isFist(hand1)) {
-            explodeTarget = -1.0;
-            gestureScaleTarget = 0.4;
-            gesture = 'Fist - Collapse';
-          } else if (isPeaceSign(hand1)) {
-            if (!rainbowMode) {
-              setRainbowMode(true);
-            }
-            gesture = 'Peace - Rainbow ON';
-          } else {
-            const pinchData = isPinchGesture(hand1);
-            if (pinchData.isPinch) {
-              const distNorm = clamp((pinchData.distance - 0.02) / (0.20 - 0.02), 0, 1);
-              gestureScaleTarget = lerp(0.35, 3.5, distNorm);
-              explodeTarget = 0;
-              gesture = `Pinch - Scale: ${gestureScaleTarget.toFixed(2)}`;
-            } else {
-              gestureScaleTarget = 1.0;
-              explodeTarget = 0;
-            }
-          }
-
-          setStatus(`Camera: running • ${gesture}`);
-        });
-
-        mpCam = new Camera(videoRef.current, {
-          onFrame: async () => {
-            if (mpHands && videoRef.current) {
-              await mpHands.send({ image: videoRef.current });
-            }
-          },
-          width: 640,
-          height: 480
-        });
-
-        mpCam.start();
-        setCameraStarted(true);
-        setStatus("Camera: running • Hand: not detected");
-      } catch (err) {
-        console.error(err);
-        setStatus("Camera failed. Use HTTPS or http://localhost and allow permissions.");
-      }
-    };
 
     rebuild();
     animate();
@@ -626,6 +536,100 @@ export default function ParticleSystem({}: ParticleSystemProps) {
       }
     };
   }, [template, color, count, size, cameraStarted, rainbowMode]);
+
+  useEffect(() => {
+    if (!cameraStarted || !videoRef.current) return;
+
+    let mpHands: Hands | null = null;
+    let mpCam: Camera | null = null;
+
+    const initMediaPipe = async () => {
+      try {
+        mpHands = new Hands({
+          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        mpHands.setOptions({
+          maxNumHands: 2,
+          modelComplexity: 1,
+          minDetectionConfidence: 0.7,
+          minTrackingConfidence: 0.7
+        });
+
+        mpHands.onResults((results) => {
+          const hands = results.multiHandLandmarks;
+          if (!hands || hands.length === 0) {
+            setStatus("Camera: running • Hand: not detected");
+            gestureScaleTargetRef.current = 1.0;
+            explodeTargetRef.current = 0;
+            rotationTargetRef.current = 0;
+            return;
+          }
+
+          const hand1 = hands[0];
+          let gesture = '';
+
+          if (hands.length === 2) {
+            const hand2 = hands[1];
+            const distance = getTwoHandDistance(hand1, hand2);
+            gestureScaleTargetRef.current = lerp(0.5, 3.0, distance * 2);
+            rotationTargetRef.current = distance > 0.5 ? 1.5 : 0;
+            gesture = 'Two Hands - Rotate';
+          } else if (isOpenPalm(hand1)) {
+            explodeTargetRef.current = 1.5;
+            gestureScaleTargetRef.current = 1.8;
+            gesture = 'Open Palm - Explode';
+          } else if (isFist(hand1)) {
+            explodeTargetRef.current = -1.0;
+            gestureScaleTargetRef.current = 0.4;
+            gesture = 'Fist - Collapse';
+          } else if (isPeaceSign(hand1)) {
+            if (!rainbowMode) {
+              setRainbowMode(true);
+            }
+            gesture = 'Peace - Rainbow ON';
+          } else {
+            const pinchData = isPinchGesture(hand1);
+            if (pinchData.isPinch) {
+              const distNorm = clamp((pinchData.distance - 0.02) / (0.20 - 0.02), 0, 1);
+              gestureScaleTargetRef.current = lerp(0.35, 3.5, distNorm);
+              explodeTargetRef.current = 0;
+              gesture = `Pinch - Scale: ${gestureScaleTargetRef.current.toFixed(2)}`;
+            } else {
+              gestureScaleTargetRef.current = 1.0;
+              explodeTargetRef.current = 0;
+            }
+          }
+
+          setStatus(`Camera: running • ${gesture}`);
+        });
+
+        if (videoRef.current) {
+          mpCam = new Camera(videoRef.current, {
+            onFrame: async () => {
+              if (mpHands && videoRef.current) {
+                await mpHands.send({ image: videoRef.current });
+              }
+            },
+            width: 640,
+            height: 480
+          });
+
+          mpCam.start();
+          setStatus("Camera: running • Hand: not detected");
+        }
+      } catch (err) {
+        console.error(err);
+        setStatus("MediaPipe failed to load");
+      }
+    };
+
+    initMediaPipe();
+
+    return () => {
+      if (mpCam) mpCam.stop();
+    };
+  }, [cameraStarted, rainbowMode]);
 
   const handleStartCamera = async () => {
     if (cameraStarted || !videoRef.current) return;
