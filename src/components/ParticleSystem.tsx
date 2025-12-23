@@ -640,6 +640,7 @@ export default function ParticleSystem({}: ParticleSystemProps) {
         audio: false
       });
       videoRef.current.srcObject = stream;
+      await videoRef.current.play();
       setCameraStarted(true);
     } catch (err) {
       console.error(err);
@@ -1027,44 +1028,34 @@ export default function ParticleSystem({}: ParticleSystemProps) {
         )}
       </div>
 
-      {cameraStarted && (
-        <div style={{
-          position: 'fixed',
-          right: isMobile ? '14px' : '14px',
-          bottom: isMobile ? '14px' : '14px',
-          width: isMobile ? '120px' : '160px',
-          aspectRatio: '4 / 3',
-          borderRadius: '12px',
-          border: '1px solid rgba(255,255,255,0.14)',
-          background: 'rgba(255,255,255,0.05)',
-          overflow: 'hidden',
-          opacity: 0.9,
-          zIndex: 500
-        }}>
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            style={{
-              width: '100%',
-              height: '100%',
-              objectFit: 'cover',
-              transform: 'scaleX(-1)'
-            }}
-          />
-        </div>
-      )}
-
-      {!cameraStarted && (
+      <div style={{
+        position: 'fixed',
+        right: isMobile ? '14px' : '14px',
+        bottom: isMobile ? '14px' : '14px',
+        width: isMobile ? '120px' : '160px',
+        aspectRatio: '4 / 3',
+        borderRadius: '12px',
+        border: '1px solid rgba(255,255,255,0.14)',
+        background: 'rgba(0,0,0,0.8)',
+        overflow: 'hidden',
+        opacity: cameraStarted ? 0.9 : 0,
+        pointerEvents: cameraStarted ? 'auto' : 'none',
+        zIndex: 500,
+        transition: 'opacity 0.3s ease'
+      }}>
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted
-          style={{ display: 'none' }}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            transform: 'scaleX(-1)'
+          }}
         />
-      )}
+      </div>
 
       {showGallery && (
         <CommunityGallery
