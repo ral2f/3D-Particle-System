@@ -278,6 +278,7 @@ export default function ParticleSystem({}: ParticleSystemProps) {
   const [presetName, setPresetName] = useState('');
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
 
   const videoRecorderRef = useRef<VideoRecorder>(new VideoRecorder());
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -286,11 +287,17 @@ export default function ParticleSystem({}: ParticleSystemProps) {
   const explodeTargetRef = useRef(0);
   const rotationTargetRef = useRef(0);
 
+  const addLog = (message: string) => {
+    console.log(message);
+    setDebugLogs(prev => [...prev.slice(-9), `${new Date().toLocaleTimeString()}: ${message}`]);
+  };
+
   useEffect(() => {
     const checkMobile = () => {
       setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
     };
     checkMobile();
+    addLog("App initialized. Ready to start camera.");
   }, []);
 
   useEffect(() => {
@@ -539,31 +546,55 @@ export default function ParticleSystem({}: ParticleSystemProps) {
     if (!cameraStarted || !videoRef.current) return;
 
     let mpHands: Hands | null = null;
+    let animationId: number | null = null;
+    let isProcessing = false;
 
     const initMediaPipe = async () => {
       try {
-        setStatus("Initializing hand tracking...");
+        addLog("Step 1: Requesting camera access...");
+        setStatus("Requesting camera access...");
 
-        await new Promise((resolve) => {
-          if (videoRef.current && videoRef.current.readyState >= 2) {
-            resolve(true);
-          } else if (videoRef.current) {
-            videoRef.current.addEventListener('loadeddata', () => resolve(true), { once: true });
-            setTimeout(() => resolve(true), 1000);
-          }
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "user",
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          },
+          audio: false
         });
 
-        console.log("Creating MediaPipe Hands...");
+        addLog("Step 2: Camera access granted");
+
+        if (!videoRef.current) {
+          addLog("ERROR: Video element lost");
+          return;
+        }
+
+        videoRef.current.srcObject = stream;
+
+        await new Promise<void>((resolve) => {
+          if (!videoRef.current) return;
+          videoRef.current.onloadedmetadata = () => {
+            addLog("Step 3: Video metadata loaded");
+            resolve();
+          };
+        });
+
+        addLog("Step 4: Initializing MediaPipe Hands...");
+        setStatus("Loading hand tracking model...");
+
         mpHands = new Hands({
           locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
         });
 
         mpHands.setOptions({
-          maxNumHands: 2,
+          maxNumHands: 1,
           modelComplexity: 1,
           minDetectionConfidence: 0.5,
           minTrackingConfidence: 0.5
         });
+
+        addLog("Step 5: Setting up result handler...");
 
         mpHands.onResults((results) => {
           const hands = results.multiHandLandmarks;
@@ -588,15 +619,18 @@ export default function ParticleSystem({}: ParticleSystemProps) {
             explodeTargetRef.current = 1.5;
             gestureScaleTargetRef.current = 1.8;
             gesture = 'Open Palm - Explode';
+            addLog("Detected: Open Palm");
           } else if (isFist(hand1)) {
             explodeTargetRef.current = -1.0;
             gestureScaleTargetRef.current = 0.4;
             gesture = 'Fist - Collapse';
+            addLog("Detected: Fist");
           } else if (isPeaceSign(hand1)) {
             if (!rainbowMode) {
               setRainbowMode(true);
             }
             gesture = 'Peace - Rainbow ON';
+            addLog("Detected: Peace Sign");
           } else {
             const pinchData = isPinchGesture(hand1);
             if (pinchData.isPinch) {
@@ -611,61 +645,68 @@ export default function ParticleSystem({}: ParticleSystemProps) {
           }
 
           setStatus(`Camera: running • ${gesture}`);
+          isProcessing = false;
         });
 
-        console.log("Starting frame processing...");
+        addLog("Step 6: Starting frame processing loop...");
         setStatus("Camera: running • Hand: not detected");
 
-        const processFrame = async () => {
-          if (mpHands && videoRef.current && videoRef.current.readyState >= 2) {
+        const sendFrame = async () => {
+          if (!mpHands || !videoRef.current || videoRef.current.readyState !== 4) {
+            animationId = requestAnimationFrame(sendFrame);
+            return;
+          }
+
+          if (!isProcessing) {
+            isProcessing = true;
             try {
               await mpHands.send({ image: videoRef.current });
             } catch (err) {
-              console.error("Frame processing error:", err);
+              addLog(`Frame processing error: ${err instanceof Error ? err.message : 'Unknown'}`);
+              isProcessing = false;
             }
           }
-          if (mpHands) {
-            requestAnimationFrame(processFrame);
-          }
+
+          animationId = requestAnimationFrame(sendFrame);
         };
 
-        processFrame();
-        console.log("Frame processing started");
+        sendFrame();
+        addLog("Step 7: Hand tracking active!");
+
       } catch (err) {
-        console.error("MediaPipe Error:", err);
-        setStatus(`Error: ${err instanceof Error ? err.message : 'MediaPipe failed'}`);
+        const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+        addLog(`ERROR: ${errorMsg}`);
+        setStatus(`Error: ${errorMsg}`);
+        console.error("MediaPipe initialization error:", err);
       }
     };
 
     initMediaPipe();
 
     return () => {
+      addLog("Cleanup: Stopping camera...");
+      if (animationId) {
+        cancelAnimationFrame(animationId);
+      }
       if (mpHands) {
         try {
           mpHands.close();
         } catch (e) {
           console.error("Error closing hands:", e);
         }
-        mpHands = null;
+      }
+      if (videoRef.current?.srcObject) {
+        const stream = videoRef.current.srcObject as MediaStream;
+        stream.getTracks().forEach(track => track.stop());
+        videoRef.current.srcObject = null;
       }
     };
   }, [cameraStarted, rainbowMode]);
 
-  const handleStartCamera = async () => {
+  const handleStartCamera = () => {
     if (cameraStarted || !videoRef.current) return;
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
-        audio: false
-      });
-      videoRef.current.srcObject = stream;
-      await videoRef.current.play();
-      setCameraStarted(true);
-    } catch (err) {
-      console.error(err);
-      setStatus("Camera failed. Use HTTPS or http://localhost and allow permissions.");
-    }
+    addLog("Button clicked: Starting camera...");
+    setCameraStarted(true);
   };
 
   const handleScreenshot = () => {
@@ -1164,6 +1205,96 @@ export default function ParticleSystem({}: ParticleSystemProps) {
           </div>
         </div>
       )}
+
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        style={{
+          position: 'fixed',
+          right: isMobile ? '14px' : '14px',
+          top: isMobile ? '80px' : '80px',
+          width: isMobile ? '120px' : '160px',
+          aspectRatio: '4 / 3',
+          borderRadius: '12px',
+          border: cameraStarted ? '1px solid rgba(255,255,255,0.14)' : 'none',
+          background: cameraStarted ? 'rgba(255,255,255,0.05)' : 'transparent',
+          overflow: 'hidden',
+          opacity: cameraStarted ? 0.9 : 0,
+          zIndex: cameraStarted ? 500 : -1,
+          objectFit: 'cover',
+          transform: 'scaleX(-1)',
+          pointerEvents: cameraStarted ? 'auto' : 'none'
+        }}
+      />
+
+      <div style={{
+        position: 'fixed',
+        left: isMobile ? '10px' : '14px',
+        bottom: isMobile ? '10px' : '14px',
+        maxWidth: isMobile ? 'calc(100% - 20px)' : '400px',
+        minWidth: '280px',
+        maxHeight: '300px',
+        background: 'rgba(0, 0, 0, 0.85)',
+        backdropFilter: 'blur(10px)',
+        border: '1px solid rgba(255, 255, 255, 0.2)',
+        borderRadius: '12px',
+        padding: '12px',
+        zIndex: 600,
+        overflow: 'auto'
+      }}>
+        <div style={{
+          fontSize: '11px',
+          fontWeight: 'bold',
+          color: 'rgba(255, 255, 255, 0.9)',
+          marginBottom: '8px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center'
+        }}>
+          <span>Debug Log</span>
+          <button
+            onClick={() => setDebugLogs([])}
+            style={{
+              background: 'rgba(255, 255, 255, 0.1)',
+              border: '1px solid rgba(255, 255, 255, 0.2)',
+              borderRadius: '6px',
+              padding: '4px 8px',
+              color: 'white',
+              fontSize: '10px',
+              cursor: 'pointer'
+            }}
+          >
+            Clear
+          </button>
+        </div>
+        {debugLogs.length === 0 ? (
+          <div style={{
+            fontSize: '10px',
+            color: 'rgba(255, 255, 255, 0.5)',
+            fontStyle: 'italic',
+            padding: '8px 0'
+          }}>
+            No logs yet... Waiting for camera start.
+          </div>
+        ) : (
+          debugLogs.map((log, i) => (
+            <div
+              key={i}
+              style={{
+                fontSize: '10px',
+                color: log.includes('ERROR') ? '#ff6b6b' : log.includes('Detected') ? '#51cf66' : 'rgba(255, 255, 255, 0.8)',
+                padding: '4px 0',
+                borderBottom: i < debugLogs.length - 1 ? '1px solid rgba(255, 255, 255, 0.1)' : 'none',
+                fontFamily: 'monospace'
+              }}
+            >
+              {log}
+            </div>
+          ))
+        )}
+      </div>
     </>
   );
 }
