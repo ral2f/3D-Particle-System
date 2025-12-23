@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Hands } from '@mediapipe/hands';
-import { Camera } from '@mediapipe/camera_utils';
 import { presets, type Preset } from '../types/presets';
 import { captureScreenshot, VideoRecorder } from '../utils/capture';
 import { isPinchGesture, isOpenPalm, isFist, getTwoHandDistance, isPeaceSign } from '../utils/gestureRecognition';
@@ -526,7 +525,6 @@ export default function ParticleSystem({}: ParticleSystemProps) {
       renderer.dispose();
       geom?.dispose();
       mat?.dispose();
-      if (mpCam) mpCam.stop();
       if (videoRef.current?.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
         stream.getTracks().forEach(track => track.stop());
@@ -541,10 +539,21 @@ export default function ParticleSystem({}: ParticleSystemProps) {
     if (!cameraStarted || !videoRef.current) return;
 
     let mpHands: Hands | null = null;
-    let mpCam: Camera | null = null;
 
     const initMediaPipe = async () => {
       try {
+        setStatus("Initializing hand tracking...");
+
+        await new Promise((resolve) => {
+          if (videoRef.current && videoRef.current.readyState >= 2) {
+            resolve(true);
+          } else if (videoRef.current) {
+            videoRef.current.addEventListener('loadeddata', () => resolve(true), { once: true });
+            setTimeout(() => resolve(true), 1000);
+          }
+        });
+
+        console.log("Creating MediaPipe Hands...");
         mpHands = new Hands({
           locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
         });
@@ -552,8 +561,8 @@ export default function ParticleSystem({}: ParticleSystemProps) {
         mpHands.setOptions({
           maxNumHands: 2,
           modelComplexity: 1,
-          minDetectionConfidence: 0.7,
-          minTrackingConfidence: 0.7
+          minDetectionConfidence: 0.5,
+          minTrackingConfidence: 0.5
         });
 
         mpHands.onResults((results) => {
@@ -604,30 +613,41 @@ export default function ParticleSystem({}: ParticleSystemProps) {
           setStatus(`Camera: running • ${gesture}`);
         });
 
-        if (videoRef.current) {
-          mpCam = new Camera(videoRef.current, {
-            onFrame: async () => {
-              if (mpHands && videoRef.current) {
-                await mpHands.send({ image: videoRef.current });
-              }
-            },
-            width: 640,
-            height: 480
-          });
+        console.log("Starting frame processing...");
+        setStatus("Camera: running • Hand: not detected");
 
-          mpCam.start();
-          setStatus("Camera: running • Hand: not detected");
-        }
+        const processFrame = async () => {
+          if (mpHands && videoRef.current && videoRef.current.readyState >= 2) {
+            try {
+              await mpHands.send({ image: videoRef.current });
+            } catch (err) {
+              console.error("Frame processing error:", err);
+            }
+          }
+          if (mpHands) {
+            requestAnimationFrame(processFrame);
+          }
+        };
+
+        processFrame();
+        console.log("Frame processing started");
       } catch (err) {
-        console.error(err);
-        setStatus("MediaPipe failed to load");
+        console.error("MediaPipe Error:", err);
+        setStatus(`Error: ${err instanceof Error ? err.message : 'MediaPipe failed'}`);
       }
     };
 
     initMediaPipe();
 
     return () => {
-      if (mpCam) mpCam.stop();
+      if (mpHands) {
+        try {
+          mpHands.close();
+        } catch (e) {
+          console.error("Error closing hands:", e);
+        }
+        mpHands = null;
+      }
     };
   }, [cameraStarted, rainbowMode]);
 
