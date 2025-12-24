@@ -261,6 +261,16 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
+// iOS Detection Helper
+function isIOS(): boolean {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function isSafari(): boolean {
+  return /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+}
+
 export default function ParticleSystem({}: ParticleSystemProps) {
   const mountRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -286,15 +296,19 @@ export default function ParticleSystem({}: ParticleSystemProps) {
   const gestureScaleTargetRef = useRef(1.0);
   const explodeTargetRef = useRef(0);
   const rotationTargetRef = useRef(0);
+  const handLandmarkerRef = useRef<HandLandmarker | null>(null);
+  const animationIdRef = useRef<number | null>(null);
 
   const addLog = (message: string) => {
-    console.log(message);
-    setDebugLogs(prev => [...prev.slice(-9), `${new Date().toLocaleTimeString()}: ${message}`]);
+    console.log(`[ParticleSystem] ${message}`);
+    setDebugLogs(prev => [...prev.slice(-19), `${new Date().toLocaleTimeString()}: ${message}`]);
   };
 
   useEffect(() => {
     const checkMobile = () => {
-      setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
+      const mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      setIsMobile(mobile);
+      addLog(`Device: ${mobile ? 'Mobile' : 'Desktop'}, iOS: ${isIOS()}, Safari: ${isSafari()}`);
     };
     checkMobile();
     addLog("App initialized. Ready to start camera.");
@@ -373,10 +387,10 @@ export default function ParticleSystem({}: ParticleSystemProps) {
     };
 
     const clock = new THREE.Clock();
-    let animationId: number;
+    let renderAnimationId: number;
 
     const animate = () => {
-      animationId = requestAnimationFrame(animate);
+      renderAnimationId = requestAnimationFrame(animate);
       controls.update();
 
       const dt = Math.min(clock.getDelta(), 0.033);
@@ -524,7 +538,7 @@ export default function ParticleSystem({}: ParticleSystemProps) {
     animate();
 
     return () => {
-      cancelAnimationFrame(animationId);
+      cancelAnimationFrame(renderAnimationId);
       window.removeEventListener('resize', handleResize);
       renderer.domElement.removeEventListener('touchstart', handleTouchStart);
       renderer.domElement.removeEventListener('touchmove', handleTouchMove);
@@ -532,144 +546,175 @@ export default function ParticleSystem({}: ParticleSystemProps) {
       renderer.dispose();
       geom?.dispose();
       mat?.dispose();
-      if (videoRef.current?.srcObject) {
-        const stream = videoRef.current.srcObject as MediaStream;
-        stream.getTracks().forEach(track => track.stop());
-      }
       if (mountRef.current && renderer.domElement.parentNode === mountRef.current) {
         mountRef.current.removeChild(renderer.domElement);
       }
     };
-  }, [template, color, count, size, cameraStarted, rainbowMode]);
+  }, [template, color, count, size, rainbowMode]);
 
+  // Separate useEffect for camera/MediaPipe - iOS optimized
   useEffect(() => {
     if (!cameraStarted || !videoRef.current) return;
 
-    let handLandmarker: HandLandmarker | null = null;
-    let animationId: number | null = null;
+    let isActive = true;
     let lastVideoTime = -1;
     let frameCount = 0;
-    let firstResultLogged = false;
+    let detectionCount = 0;
 
     const initMediaPipe = async () => {
       try {
         addLog("Step 1: Requesting camera access...");
-        setStatus("Requesting camera access...");
+        setStatus("Requesting camera...");
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user" },
+        // iOS-optimierte Kamera-Constraints
+        const constraints: MediaStreamConstraints = {
+          video: {
+            facingMode: "user",
+            width: { ideal: isIOS() ? 640 : 1280 },
+            height: { ideal: isIOS() ? 480 : 720 },
+          },
           audio: false
-        });
+        };
 
+        addLog(`Constraints: ${JSON.stringify(constraints.video)}`);
+
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         addLog("Step 2: Camera access granted");
+        
+        const tracks = stream.getVideoTracks();
+        if (tracks.length > 0) {
+          const settings = tracks[0].getSettings();
+          addLog(`Video: ${settings.width}x${settings.height}`);
+        }
 
-        if (!videoRef.current) {
-          addLog("ERROR: Video element lost");
+        if (!videoRef.current || !isActive) {
+          stream.getTracks().forEach(t => t.stop());
           return;
         }
 
-        videoRef.current.srcObject = stream;
+        const video = videoRef.current;
+        video.srcObject = stream;
+        
+        // iOS Safari benötigt setAttribute für playsInline
+        video.setAttribute('playsinline', 'true');
+        video.setAttribute('webkit-playsinline', 'true');
+        video.muted = true;
 
+        // Warte auf Video-Metadata
         await new Promise<void>((resolve, reject) => {
-          if (!videoRef.current) {
-            reject(new Error("Video element lost"));
-            return;
-          }
+          const timeout = setTimeout(() => {
+            reject(new Error("Video metadata timeout (10s)"));
+          }, 10000);
 
-          const video = videoRef.current;
-
-          const onLoadedMetadata = () => {
-            addLog("Step 3: Video metadata loaded");
-            video.play().then(() => {
-              addLog("Step 3b: Video playing");
-              resolve();
-            }).catch((err) => {
-              addLog(`ERROR: Video play failed: ${err.message}`);
-              reject(err);
-            });
+          const onLoaded = () => {
+            clearTimeout(timeout);
+            addLog(`Step 3: Metadata loaded - ${video.videoWidth}x${video.videoHeight}`);
+            resolve();
           };
 
-          if (video.readyState >= 2) {
-            onLoadedMetadata();
+          if (video.readyState >= 1) {
+            onLoaded();
           } else {
-            video.addEventListener('loadedmetadata', onLoadedMetadata, { once: true });
-            setTimeout(() => reject(new Error("Video loading timeout")), 5000);
+            video.addEventListener('loadedmetadata', onLoaded, { once: true });
           }
         });
 
-        addLog("Step 4: Loading MediaPipe Vision Tasks...");
-        setStatus("Loading hand tracking model...");
+        // Starte Video-Wiedergabe
+        try {
+          await video.play();
+          addLog("Step 4: Video playing");
+        } catch (playError) {
+          addLog(`Play error: ${playError}`);
+          // Auf iOS manchmal nötig: erneut versuchen
+          await new Promise(r => setTimeout(r, 100));
+          await video.play();
+          addLog("Step 4b: Video playing (retry)");
+        }
 
+        // Warte bis Video tatsächlich Frames liefert
+        await new Promise<void>((resolve) => {
+          const checkPlaying = () => {
+            if (video.readyState >= 4 && video.videoWidth > 0) {
+              addLog(`Step 5: Video ready - readyState=${video.readyState}`);
+              resolve();
+            } else {
+              requestAnimationFrame(checkPlaying);
+            }
+          };
+          checkPlaying();
+        });
+
+        addLog("Step 6: Loading MediaPipe...");
+        setStatus("Loading hand tracking...");
+
+        // MediaPipe Vision WASM laden
         const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
         );
+        addLog("Step 7: Vision WASM loaded");
 
-        addLog("Step 5: Creating HandLandmarker...");
-
-        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-        addLog(`Device: ${isIOS ? 'iOS' : 'Other'}, trying GPU delegate...`);
+        // HandLandmarker erstellen - CPU für iOS
+        addLog(`Step 8: Creating HandLandmarker (iOS=${isIOS()})...`);
+        
+        const handLandmarkerOptions = {
+          baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+            // WICHTIG: Auf iOS nur CPU verwenden!
+            delegate: isIOS() ? "CPU" as const : "GPU" as const
+          },
+          runningMode: "VIDEO" as const,
+          numHands: 2,
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5
+        };
 
         try {
-          handLandmarker = await HandLandmarker.createFromOptions(vision, {
-            baseOptions: {
-              modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-              delegate: "GPU"
-            },
-            runningMode: "VIDEO",
-            numHands: 2,
-            minHandDetectionConfidence: 0.5,
-            minHandPresenceConfidence: 0.5,
-            minTrackingConfidence: 0.5
-          });
-          addLog("Step 6: HandLandmarker created with GPU!");
-        } catch (gpuError) {
-          addLog("GPU failed, trying CPU fallback...");
-          handLandmarker = await HandLandmarker.createFromOptions(vision, {
-            baseOptions: {
-              modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
-            },
-            runningMode: "VIDEO",
-            numHands: 2,
-            minHandDetectionConfidence: 0.5,
-            minHandPresenceConfidence: 0.5,
-            minTrackingConfidence: 0.5
-          });
-          addLog("Step 6: HandLandmarker created with CPU!");
+          handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, handLandmarkerOptions);
+          addLog(`Step 9: HandLandmarker created with ${handLandmarkerOptions.baseOptions.delegate}`);
+        } catch (createError) {
+          addLog(`GPU failed, trying CPU: ${createError}`);
+          handLandmarkerOptions.baseOptions.delegate = "CPU";
+          handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, handLandmarkerOptions);
+          addLog("Step 9: HandLandmarker created with CPU fallback");
         }
-        setStatus("Camera: running • Hand: not detected");
 
+        setStatus("Hand tracking active!");
+        addLog("Step 10: Starting detection loop...");
+
+        // Detection Loop
         const processFrame = () => {
-          if (!handLandmarker || !videoRef.current) {
-            if (handLandmarker) {
-              animationId = requestAnimationFrame(processFrame);
-            }
+          if (!isActive || !handLandmarkerRef.current || !videoRef.current) {
             return;
           }
 
-          const video = videoRef.current;
+          const vid = videoRef.current;
 
-          if (video.readyState === 4 && video.currentTime !== lastVideoTime) {
-            lastVideoTime = video.currentTime;
+          // Prüfe ob neuer Frame verfügbar
+          if (vid.readyState >= 2 && vid.currentTime !== lastVideoTime) {
+            lastVideoTime = vid.currentTime;
             frameCount++;
 
-            if (frameCount === 1) {
-              addLog("First frame processed!");
-            }
-
             try {
-              const results: HandLandmarkerResult = handLandmarker.detectForVideo(video, performance.now());
+              const startTime = performance.now();
+              const results: HandLandmarkerResult = handLandmarkerRef.current.detectForVideo(vid, startTime);
+              
+              if (frameCount === 1) {
+                addLog("First detection completed!");
+              }
 
-              if (!firstResultLogged) {
-                addLog(`Results received! Landmarks: ${results.landmarks?.length || 0}`);
-                firstResultLogged = true;
+              // Log alle 60 Frames
+              if (frameCount % 60 === 0) {
+                addLog(`Frames: ${frameCount}, Detections: ${detectionCount}, Hands: ${results.landmarks?.length || 0}`);
               }
 
               if (!results.landmarks || results.landmarks.length === 0) {
-                setStatus("Camera: running • Hand: not detected");
-                gestureScaleTargetRef.current = 1.0;
-                explodeTargetRef.current = 0;
-                rotationTargetRef.current = 0;
+                setStatus("Camera: active • No hand detected");
+                gestureScaleTargetRef.current = lerp(gestureScaleTargetRef.current, 1.0, 0.1);
+                explodeTargetRef.current = lerp(explodeTargetRef.current, 0, 0.1);
+                rotationTargetRef.current = lerp(rotationTargetRef.current, 0, 0.1);
               } else {
+                detectionCount++;
                 const hand1 = results.landmarks[0];
                 let gesture = '';
 
@@ -678,85 +723,92 @@ export default function ParticleSystem({}: ParticleSystemProps) {
                   const distance = getTwoHandDistance(hand1, hand2);
                   gestureScaleTargetRef.current = lerp(0.5, 3.0, distance * 2);
                   rotationTargetRef.current = distance > 0.5 ? 1.5 : 0;
-                  gesture = 'Two Hands - Rotate';
-                  addLog("Detected: Two Hands");
+                  gesture = 'Two Hands';
                 } else if (isOpenPalm(hand1)) {
                   explodeTargetRef.current = 1.5;
                   gestureScaleTargetRef.current = 1.8;
-                  gesture = 'Open Palm - Explode';
-                  addLog("Detected: Open Palm");
+                  gesture = 'Open Palm';
                 } else if (isFist(hand1)) {
                   explodeTargetRef.current = -1.0;
                   gestureScaleTargetRef.current = 0.4;
-                  gesture = 'Fist - Collapse';
-                  addLog("Detected: Fist");
+                  gesture = 'Fist';
                 } else if (isPeaceSign(hand1)) {
                   if (!rainbowMode) {
                     setRainbowMode(true);
                   }
-                  gesture = 'Peace - Rainbow ON';
-                  addLog("Detected: Peace Sign");
+                  gesture = 'Peace Sign';
                 } else {
                   const pinchData = isPinchGesture(hand1);
                   if (pinchData.isPinch) {
-                    const distNorm = clamp((pinchData.distance - 0.02) / (0.20 - 0.02), 0, 1);
+                    const distNorm = clamp((pinchData.distance - 0.02) / (0.18), 0, 1);
                     gestureScaleTargetRef.current = lerp(0.35, 3.5, distNorm);
                     explodeTargetRef.current = 0;
-                    gesture = `Pinch - Scale: ${gestureScaleTargetRef.current.toFixed(2)}`;
+                    gesture = `Pinch: ${(gestureScaleTargetRef.current).toFixed(1)}x`;
                   } else {
-                    gestureScaleTargetRef.current = 1.0;
-                    explodeTargetRef.current = 0;
+                    gestureScaleTargetRef.current = lerp(gestureScaleTargetRef.current, 1.0, 0.05);
+                    explodeTargetRef.current = lerp(explodeTargetRef.current, 0, 0.05);
+                    gesture = 'Hand detected';
                   }
                 }
 
-                setStatus(`Camera: running • ${gesture}`);
+                setStatus(`✓ ${gesture}`);
               }
-            } catch (err) {
-              addLog(`Frame error: ${err instanceof Error ? err.message : 'Unknown'}`);
-              console.error("Detection error:", err);
+            } catch (detectError) {
+              if (frameCount < 5) {
+                addLog(`Detection error: ${detectError}`);
+              }
             }
           }
 
-          animationId = requestAnimationFrame(processFrame);
+          animationIdRef.current = requestAnimationFrame(processFrame);
         };
 
-        addLog("Step 7: Starting detection loop...");
         processFrame();
-        addLog("Step 8: Hand tracking active!");
 
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-        addLog(`ERROR: ${errorMsg}`);
-        setStatus(`Error: ${errorMsg}`);
-        console.error("MediaPipe initialization error:", err);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addLog(`ERROR: ${msg}`);
+        setStatus(`Error: ${msg}`);
+        console.error("MediaPipe error:", error);
       }
     };
 
     initMediaPipe();
 
     return () => {
-      addLog("Cleanup: Stopping camera...");
-      if (animationId) {
-        cancelAnimationFrame(animationId);
+      isActive = false;
+      addLog("Cleanup starting...");
+      
+      if (animationIdRef.current) {
+        cancelAnimationFrame(animationIdRef.current);
+        animationIdRef.current = null;
       }
-      if (handLandmarker) {
+      
+      if (handLandmarkerRef.current) {
         try {
-          handLandmarker.close();
+          handLandmarkerRef.current.close();
         } catch (e) {
-          console.error("Error closing hand landmarker:", e);
+          console.error("Error closing HandLandmarker:", e);
         }
+        handLandmarkerRef.current = null;
       }
+      
       if (videoRef.current?.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
-        stream.getTracks().forEach(track => track.stop());
+        stream.getTracks().forEach(track => {
+          track.stop();
+          addLog(`Track stopped: ${track.kind}`);
+        });
         videoRef.current.srcObject = null;
       }
+      
+      addLog("Cleanup complete");
     };
   }, [cameraStarted, rainbowMode]);
 
   const handleStartCamera = () => {
-    if (cameraStarted || !videoRef.current) return;
-    addLog("Button clicked: Starting camera...");
+    if (cameraStarted) return;
+    addLog("=== START CAMERA CLICKED ===");
     setCameraStarted(true);
   };
 
@@ -892,7 +944,7 @@ export default function ParticleSystem({}: ParticleSystemProps) {
             padding: '10px',
             margin: '10px 0'
           }}>
-            📱 Use gestures or pinch with two fingers to scale particles
+            📱 Gesten: Pinch zum Skalieren, offene Hand zum Explodieren, Faust zum Zusammenziehen
           </div>
         )}
 
@@ -1000,7 +1052,7 @@ export default function ParticleSystem({}: ParticleSystemProps) {
         </div>
 
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center', justifyContent: 'space-between', margin: '10px 0' }}>
-          <label style={{ fontSize: '12px', color: 'rgba(255,255,255,0.78)', width: '120px' }}>Particle Count</label>
+          <label style={{ fontSize: '12px', color: 'rgba(255,255,255,0.78)', width: '120px' }}>Particles: {count}</label>
           <input
             type="range"
             min="2000"
@@ -1013,7 +1065,7 @@ export default function ParticleSystem({}: ParticleSystemProps) {
         </div>
 
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center', justifyContent: 'space-between', margin: '10px 0' }}>
-          <label style={{ fontSize: '12px', color: 'rgba(255,255,255,0.78)', width: '120px' }}>Base Size</label>
+          <label style={{ fontSize: '12px', color: 'rgba(255,255,255,0.78)', width: '120px' }}>Size: {size}</label>
           <input
             type="range"
             min="1"
@@ -1110,36 +1162,9 @@ export default function ParticleSystem({}: ParticleSystemProps) {
             Gallery
           </button>
         </div>
-
-        {!isMobile && (
-          <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.68)', lineHeight: '1.35', marginTop: '8px' }}>
-            <span style={{
-              display: 'inline-block',
-              fontSize: '10px',
-              padding: '3px 6px',
-              borderRadius: '999px',
-              border: '1px solid rgba(255,255,255,0.12)',
-              background: 'rgba(255,255,255,0.06)',
-              marginRight: '4px',
-              marginTop: '6px'
-            }}>Gesture</span>
-            Pinch (thumb+index) to scale particles.
-            <br />
-            <span style={{
-              display: 'inline-block',
-              fontSize: '10px',
-              padding: '3px 6px',
-              borderRadius: '999px',
-              border: '1px solid rgba(255,255,255,0.12)',
-              background: 'rgba(255,255,255,0.06)',
-              marginRight: '4px',
-              marginTop: '6px'
-            }}>Tip</span>
-            Use good light; keep hand within camera view.
-          </div>
-        )}
       </div>
 
+      {/* Video Preview - nur EIN Element */}
       <div style={{
         position: 'fixed',
         right: isMobile ? '14px' : '14px',
@@ -1147,13 +1172,12 @@ export default function ParticleSystem({}: ParticleSystemProps) {
         width: isMobile ? '120px' : '160px',
         aspectRatio: '4 / 3',
         borderRadius: '12px',
-        border: '1px solid rgba(255,255,255,0.14)',
+        border: cameraStarted ? '2px solid rgba(100,255,100,0.5)' : '1px solid rgba(255,255,255,0.14)',
         background: 'rgba(0,0,0,0.8)',
         overflow: 'hidden',
-        opacity: cameraStarted ? 0.9 : 0,
-        pointerEvents: cameraStarted ? 'auto' : 'none',
+        opacity: cameraStarted ? 1 : 0.3,
         zIndex: 500,
-        transition: 'opacity 0.3s ease'
+        transition: 'opacity 0.3s ease, border-color 0.3s ease'
       }}>
         <video
           ref={videoRef}
@@ -1167,6 +1191,19 @@ export default function ParticleSystem({}: ParticleSystemProps) {
             transform: 'scaleX(-1)'
           }}
         />
+        {!cameraStarted && (
+          <div style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            color: 'rgba(255,255,255,0.5)',
+            fontSize: '10px',
+            textAlign: 'center'
+          }}>
+            Camera off
+          </div>
+        )}
       </div>
 
       {showGallery && (
@@ -1218,7 +1255,8 @@ export default function ParticleSystem({}: ParticleSystemProps) {
                 background: 'rgba(255,255,255,0.1)',
                 color: 'white',
                 fontSize: '14px',
-                marginBottom: '16px'
+                marginBottom: '16px',
+                boxSizing: 'border-box'
               }}
             />
             <div style={{ display: 'flex', gap: '10px' }}>
@@ -1257,41 +1295,19 @@ export default function ParticleSystem({}: ParticleSystemProps) {
         </div>
       )}
 
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        style={{
-          position: 'fixed',
-          right: isMobile ? '14px' : '14px',
-          top: isMobile ? '80px' : '80px',
-          width: isMobile ? '120px' : '160px',
-          aspectRatio: '4 / 3',
-          borderRadius: '12px',
-          border: cameraStarted ? '1px solid rgba(255,255,255,0.14)' : 'none',
-          background: cameraStarted ? 'rgba(255,255,255,0.05)' : 'transparent',
-          overflow: 'hidden',
-          opacity: cameraStarted ? 0.9 : 0,
-          zIndex: cameraStarted ? 500 : -1,
-          objectFit: 'cover',
-          transform: 'scaleX(-1)',
-          pointerEvents: cameraStarted ? 'auto' : 'none'
-        }}
-      />
-
+      {/* Debug Log Panel */}
       <div style={{
         position: 'fixed',
         left: isMobile ? '10px' : '14px',
         bottom: isMobile ? '10px' : '14px',
-        maxWidth: isMobile ? 'calc(100% - 20px)' : '400px',
-        minWidth: '280px',
-        maxHeight: '300px',
-        background: 'rgba(0, 0, 0, 0.85)',
+        maxWidth: isMobile ? 'calc(100% - 150px)' : '400px',
+        minWidth: '250px',
+        maxHeight: '200px',
+        background: 'rgba(0, 0, 0, 0.9)',
         backdropFilter: 'blur(10px)',
         border: '1px solid rgba(255, 255, 255, 0.2)',
         borderRadius: '12px',
-        padding: '12px',
+        padding: '10px',
         zIndex: 600,
         overflow: 'auto'
       }}>
@@ -1299,21 +1315,21 @@ export default function ParticleSystem({}: ParticleSystemProps) {
           fontSize: '11px',
           fontWeight: 'bold',
           color: 'rgba(255, 255, 255, 0.9)',
-          marginBottom: '8px',
+          marginBottom: '6px',
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center'
         }}>
-          <span>Debug Log</span>
+          <span>Debug ({debugLogs.length})</span>
           <button
             onClick={() => setDebugLogs([])}
             style={{
               background: 'rgba(255, 255, 255, 0.1)',
               border: '1px solid rgba(255, 255, 255, 0.2)',
-              borderRadius: '6px',
-              padding: '4px 8px',
+              borderRadius: '4px',
+              padding: '2px 6px',
               color: 'white',
-              fontSize: '10px',
+              fontSize: '9px',
               cursor: 'pointer'
             }}
           >
@@ -1324,21 +1340,23 @@ export default function ParticleSystem({}: ParticleSystemProps) {
           <div style={{
             fontSize: '10px',
             color: 'rgba(255, 255, 255, 0.5)',
-            fontStyle: 'italic',
-            padding: '8px 0'
+            fontStyle: 'italic'
           }}>
-            No logs yet... Waiting for camera start.
+            Click "Start Camera" to begin...
           </div>
         ) : (
           debugLogs.map((log, i) => (
             <div
               key={i}
               style={{
-                fontSize: '10px',
-                color: log.includes('ERROR') ? '#ff6b6b' : log.includes('Detected') ? '#51cf66' : 'rgba(255, 255, 255, 0.8)',
-                padding: '4px 0',
-                borderBottom: i < debugLogs.length - 1 ? '1px solid rgba(255, 255, 255, 0.1)' : 'none',
-                fontFamily: 'monospace'
+                fontSize: '9px',
+                color: log.includes('ERROR') ? '#ff6b6b' : 
+                       log.includes('Step') ? '#4dabf7' :
+                       log.includes('Detected') || log.includes('Hands:') ? '#51cf66' : 
+                       'rgba(255, 255, 255, 0.7)',
+                padding: '2px 0',
+                fontFamily: 'monospace',
+                wordBreak: 'break-word'
               }}
             >
               {log}
