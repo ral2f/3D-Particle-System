@@ -261,6 +261,14 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
 // iOS Detection Helper
 function isIOS(): boolean {
   return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
@@ -376,9 +384,10 @@ export default function ParticleSystem({}: ParticleSystemProps) {
         size: baseSize * 0.01,
         sizeAttenuation: true,
         transparent: true,
-        opacity: 0.95,
+        opacity: 0.85,
         depthWrite: false,
-        blending: THREE.AdditiveBlending
+        blending: THREE.AdditiveBlending,
+        vertexColors: false
       });
 
       points = new THREE.Points(geom, mat);
@@ -409,7 +418,8 @@ export default function ParticleSystem({}: ParticleSystemProps) {
       }
 
       if (mat) {
-        mat.size = (size * 0.01) * gestureScale;
+        const pulseFactor = 1.0 + Math.sin(Date.now() * 0.002) * 0.08;
+        mat.size = (size * 0.01) * gestureScale * pulseFactor;
       }
 
       if (points && rotationSpeed > 0.01) {
@@ -449,9 +459,11 @@ export default function ParticleSystem({}: ParticleSystemProps) {
             velocities = buildVelocities("fireworks", N);
           }
         } else {
-          const attract = 2.8;
-          const swirl = 0.8;
-          const noise = 0.55;
+          const attract = 3.5;
+          const swirl = 1.2;
+          const damping = 0.92;
+          const turbulenceStrength = 0.15;
+          const time = Date.now() * 0.001;
 
           for (let i = 0; i < N; i++) {
             const ix = i*3;
@@ -462,24 +474,47 @@ export default function ParticleSystem({}: ParticleSystemProps) {
             const y = pos[ix+1];
             const z = pos[ix+2];
 
+            // Distance from center for wave propagation
+            const distFromCenter = Math.sqrt(x*x + y*y + z*z);
+            const waveFactor = Math.sin(distFromCenter * 2.5 - time * 4.5) * 0.5 + 0.5;
+            const waveEased = easeInOutCubic(waveFactor);
+
+            // Attraction to target with easing
             const ax = (tx - x) * attract;
             const ay = (ty - y) * attract;
             const az = (tz - z) * attract;
 
-            const sx = -z * swirl;
-            const sz = x * swirl;
+            // Enhanced swirl with wave propagation
+            const swirlForce = swirl * (1.0 + waveEased * 0.5);
+            const sx = -z * swirlForce;
+            const sz = x * swirlForce;
+            const sy = Math.sin(time + i * 0.1) * 0.3;
 
-            const vx = velocities[ix+0] * noise;
-            const vy = velocities[ix+1] * noise;
-            const vz = velocities[ix+2] * noise;
+            // Turbulence for organic movement
+            const turbX = Math.sin(time * 2.0 + i * 0.5) * turbulenceStrength;
+            const turbY = Math.cos(time * 1.5 + i * 0.3) * turbulenceStrength;
+            const turbZ = Math.sin(time * 1.8 + i * 0.7) * turbulenceStrength;
 
-            const ex = x * explodeForce * 1.2;
-            const ey = y * explodeForce * 1.2;
-            const ez = z * explodeForce * 1.2;
+            // Explosion with wave propagation
+            const explodeMult = 1.5 * (1.0 + waveEased * 0.8);
+            const ex = x * explodeForce * explodeMult;
+            const ey = y * explodeForce * explodeMult;
+            const ez = z * explodeForce * explodeMult;
 
-            pos[ix+0] += (ax + sx + vx + ex) * dt;
-            pos[ix+1] += (ay + vy + ey) * dt;
-            pos[ix+2] += (az + sz + vz + ez) * dt;
+            // Accumulate forces into velocity
+            velocities[ix+0] += (ax + sx + turbX + ex) * dt;
+            velocities[ix+1] += (ay + sy + turbY + ey) * dt;
+            velocities[ix+2] += (az + sz + turbZ + ez) * dt;
+
+            // Apply velocity damping for smooth deceleration
+            velocities[ix+0] *= damping;
+            velocities[ix+1] *= damping;
+            velocities[ix+2] *= damping;
+
+            // Update position with velocity
+            pos[ix+0] += velocities[ix+0] * dt;
+            pos[ix+1] += velocities[ix+1] * dt;
+            pos[ix+2] += velocities[ix+2] * dt;
           }
         }
 
