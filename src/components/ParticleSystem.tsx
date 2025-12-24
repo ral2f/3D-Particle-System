@@ -289,6 +289,7 @@ export default function ParticleSystem({}: ParticleSystemProps) {
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [debugPanelOpen, setDebugPanelOpen] = useState(true);
 
   const videoRecorderRef = useRef<VideoRecorder>(new VideoRecorder());
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -395,9 +396,9 @@ export default function ParticleSystem({}: ParticleSystemProps) {
 
       const dt = Math.min(clock.getDelta(), 0.033);
 
-      gestureScale = lerp(gestureScale, gestureScaleTargetRef.current, 0.12);
-      explodeForce = lerp(explodeForce, explodeTargetRef.current, 0.08);
-      rotationSpeed = lerp(rotationSpeed, rotationTargetRef.current, 0.05);
+      gestureScale = lerp(gestureScale, gestureScaleTargetRef.current, 0.35);
+      explodeForce = lerp(explodeForce, explodeTargetRef.current, 0.25);
+      rotationSpeed = lerp(rotationSpeed, rotationTargetRef.current, 0.18);
 
       if (rainbowMode) {
         rainbowT += dt * 0.5;
@@ -472,9 +473,9 @@ export default function ParticleSystem({}: ParticleSystemProps) {
             const vy = velocities[ix+1] * noise;
             const vz = velocities[ix+2] * noise;
 
-            const ex = x * explodeForce * 0.5;
-            const ey = y * explodeForce * 0.5;
-            const ez = z * explodeForce * 0.5;
+            const ex = x * explodeForce * 1.2;
+            const ey = y * explodeForce * 1.2;
+            const ez = z * explodeForce * 1.2;
 
             pos[ix+0] += (ax + sx + vx + ex) * dt;
             pos[ix+1] += (ay + vy + ey) * dt;
@@ -721,16 +722,16 @@ export default function ParticleSystem({}: ParticleSystemProps) {
                 if (results.landmarks.length === 2) {
                   const hand2 = results.landmarks[1];
                   const distance = getTwoHandDistance(hand1, hand2);
-                  gestureScaleTargetRef.current = lerp(0.5, 3.0, distance * 2);
-                  rotationTargetRef.current = distance > 0.5 ? 1.5 : 0;
+                  gestureScaleTargetRef.current = lerp(0.3, 5.0, distance * 2);
+                  rotationTargetRef.current = distance > 0.5 ? 3.0 : 0;
                   gesture = 'Two Hands';
                 } else if (isOpenPalm(hand1)) {
-                  explodeTargetRef.current = 1.5;
-                  gestureScaleTargetRef.current = 1.8;
+                  explodeTargetRef.current = 3.5;
+                  gestureScaleTargetRef.current = 2.8;
                   gesture = 'Open Palm';
                 } else if (isFist(hand1)) {
-                  explodeTargetRef.current = -1.0;
-                  gestureScaleTargetRef.current = 0.4;
+                  explodeTargetRef.current = -2.5;
+                  gestureScaleTargetRef.current = 0.15;
                   gesture = 'Fist';
                 } else if (isPeaceSign(hand1)) {
                   if (!rainbowMode) {
@@ -741,7 +742,7 @@ export default function ParticleSystem({}: ParticleSystemProps) {
                   const pinchData = isPinchGesture(hand1);
                   if (pinchData.isPinch) {
                     const distNorm = clamp((pinchData.distance - 0.02) / (0.18), 0, 1);
-                    gestureScaleTargetRef.current = lerp(0.35, 3.5, distNorm);
+                    gestureScaleTargetRef.current = lerp(0.15, 5.5, distNorm);
                     explodeTargetRef.current = 0;
                     gesture = `Pinch: ${(gestureScaleTargetRef.current).toFixed(1)}x`;
                   } else {
@@ -1296,46 +1297,63 @@ export default function ParticleSystem({}: ParticleSystemProps) {
       )}
 
       {/* Debug Log Panel */}
-      <div style={{
-        position: 'fixed',
-        left: isMobile ? '10px' : '14px',
-        bottom: isMobile ? '10px' : '14px',
-        maxWidth: isMobile ? 'calc(100% - 150px)' : '400px',
-        minWidth: '250px',
-        maxHeight: '200px',
-        background: 'rgba(0, 0, 0, 0.9)',
-        backdropFilter: 'blur(10px)',
-        border: '1px solid rgba(255, 255, 255, 0.2)',
-        borderRadius: '12px',
-        padding: '10px',
-        zIndex: 600,
-        overflow: 'auto'
-      }}>
+      {debugPanelOpen && (
         <div style={{
-          fontSize: '11px',
-          fontWeight: 'bold',
-          color: 'rgba(255, 255, 255, 0.9)',
-          marginBottom: '6px',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center'
+          position: 'fixed',
+          left: isMobile ? '10px' : '14px',
+          bottom: isMobile ? '10px' : '14px',
+          maxWidth: isMobile ? 'calc(100% - 150px)' : '400px',
+          minWidth: '250px',
+          maxHeight: '200px',
+          background: 'rgba(0, 0, 0, 0.9)',
+          backdropFilter: 'blur(10px)',
+          border: '1px solid rgba(255, 255, 255, 0.2)',
+          borderRadius: '12px',
+          padding: '10px',
+          zIndex: 600,
+          overflow: 'auto'
         }}>
-          <span>Debug ({debugLogs.length})</span>
-          <button
-            onClick={() => setDebugLogs([])}
-            style={{
-              background: 'rgba(255, 255, 255, 0.1)',
-              border: '1px solid rgba(255, 255, 255, 0.2)',
-              borderRadius: '4px',
-              padding: '2px 6px',
-              color: 'white',
-              fontSize: '9px',
-              cursor: 'pointer'
-            }}
-          >
-            Clear
-          </button>
-        </div>
+          <div style={{
+            fontSize: '11px',
+            fontWeight: 'bold',
+            color: 'rgba(255, 255, 255, 0.9)',
+            marginBottom: '6px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center'
+          }}>
+            <span>Debug ({debugLogs.length})</span>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              <button
+                onClick={() => setDebugLogs([])}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.1)',
+                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                  borderRadius: '4px',
+                  padding: '2px 6px',
+                  color: 'white',
+                  fontSize: '9px',
+                  cursor: 'pointer'
+                }}
+              >
+                Clear
+              </button>
+              <button
+                onClick={() => setDebugPanelOpen(false)}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.1)',
+                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                  borderRadius: '4px',
+                  padding: '2px 6px',
+                  color: 'white',
+                  fontSize: '9px',
+                  cursor: 'pointer'
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
         {debugLogs.length === 0 ? (
           <div style={{
             fontSize: '10px',
@@ -1363,7 +1381,8 @@ export default function ParticleSystem({}: ParticleSystemProps) {
             </div>
           ))
         )}
-      </div>
+        </div>
+      )}
     </>
   );
 }
