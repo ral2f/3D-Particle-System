@@ -12,7 +12,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           'three': ['three'],
-          'mediapipe': ['@mediapipe/hands', '@mediapipe/camera_utils'],
+          'mediapipe': ['@mediapipe/tasks-vision'],
         },
       },
     },

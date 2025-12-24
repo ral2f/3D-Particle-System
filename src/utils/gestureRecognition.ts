@@ -1,6 +1,10 @@
-import { NormalizedLandmark } from '@mediapipe/hands';
+interface Landmark {
+  x: number;
+  y: number;
+  z: number;
+}
 
-export function isPinchGesture(landmarks: NormalizedLandmark[]): { isPinch: boolean; distance: number } {
+export function isPinchGesture(landmarks: Landmark[]): { isPinch: boolean; distance: number } {
   const thumb = landmarks[4];
   const index = landmarks[8];
 
@@ -15,7 +19,7 @@ export function isPinchGesture(landmarks: NormalizedLandmark[]): { isPinch: bool
   };
 }
 
-export function isOpenPalm(landmarks: NormalizedLandmark[]): boolean {
+export function isOpenPalm(landmarks: Landmark[]): boolean {
   const fingerTips = [8, 12, 16, 20];
   const fingerBases = [5, 9, 13, 17];
 
@@ -39,7 +43,7 @@ export function isOpenPalm(landmarks: NormalizedLandmark[]): boolean {
   return extendedFingers >= 4;
 }
 
-export function isFist(landmarks: NormalizedLandmark[]): boolean {
+export function isFist(landmarks: Landmark[]): boolean {
   const fingerTips = [8, 12, 16, 20];
   const palm = landmarks[0];
 
@@ -59,7 +63,7 @@ export function isFist(landmarks: NormalizedLandmark[]): boolean {
   return closedFingers >= 3;
 }
 
-export function getTwoHandDistance(hand1: NormalizedLandmark[], hand2: NormalizedLandmark[]): number {
+export function getTwoHandDistance(hand1: Landmark[], hand2: Landmark[]): number {
   const palm1 = hand1[0];
   const palm2 = hand2[0];
 
@@ -70,7 +74,7 @@ export function getTwoHandDistance(hand1: NormalizedLandmark[], hand2: Normalize
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-export function isPeaceSign(landmarks: NormalizedLandmark[]): boolean {
+export function isPeaceSign(landmarks: Landmark[]): boolean {
   const indexTip = landmarks[8];
   const middleTip = landmarks[12];
   const ringTip = landmarks[16];

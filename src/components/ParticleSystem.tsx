@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { Hands } from '@mediapipe/hands';
+import { FilesetResolver, HandLandmarker, HandLandmarkerResult } from '@mediapipe/tasks-vision';
 import { presets, type Preset } from '../types/presets';
 import { captureScreenshot, VideoRecorder } from '../utils/capture';
 import { isPinchGesture, isOpenPalm, isFist, getTwoHandDistance, isPeaceSign } from '../utils/gestureRecognition';
@@ -545,9 +545,11 @@ export default function ParticleSystem({}: ParticleSystemProps) {
   useEffect(() => {
     if (!cameraStarted || !videoRef.current) return;
 
-    let mpHands: Hands | null = null;
+    let handLandmarker: HandLandmarker | null = null;
     let animationId: number | null = null;
-    let isProcessing = false;
+    let lastVideoTime = -1;
+    let frameCount = 0;
+    let firstResultLogged = false;
 
     const initMediaPipe = async () => {
       try {
@@ -555,11 +557,7 @@ export default function ParticleSystem({}: ParticleSystemProps) {
         setStatus("Requesting camera access...");
 
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: "user",
-            width: { ideal: 640 },
-            height: { ideal: 480 }
-          },
+          video: { facingMode: "user" },
           audio: false
         });
 
@@ -572,106 +570,159 @@ export default function ParticleSystem({}: ParticleSystemProps) {
 
         videoRef.current.srcObject = stream;
 
-        await new Promise<void>((resolve) => {
-          if (!videoRef.current) return;
-          videoRef.current.onloadedmetadata = () => {
+        await new Promise<void>((resolve, reject) => {
+          if (!videoRef.current) {
+            reject(new Error("Video element lost"));
+            return;
+          }
+
+          const video = videoRef.current;
+
+          const onLoadedMetadata = () => {
             addLog("Step 3: Video metadata loaded");
-            resolve();
+            video.play().then(() => {
+              addLog("Step 3b: Video playing");
+              resolve();
+            }).catch((err) => {
+              addLog(`ERROR: Video play failed: ${err.message}`);
+              reject(err);
+            });
           };
+
+          if (video.readyState >= 2) {
+            onLoadedMetadata();
+          } else {
+            video.addEventListener('loadedmetadata', onLoadedMetadata, { once: true });
+            setTimeout(() => reject(new Error("Video loading timeout")), 5000);
+          }
         });
 
-        addLog("Step 4: Initializing MediaPipe Hands...");
+        addLog("Step 4: Loading MediaPipe Vision Tasks...");
         setStatus("Loading hand tracking model...");
 
-        mpHands = new Hands({
-          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-        });
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        );
 
-        mpHands.setOptions({
-          maxNumHands: 1,
-          modelComplexity: 1,
-          minDetectionConfidence: 0.5,
-          minTrackingConfidence: 0.5
-        });
+        addLog("Step 5: Creating HandLandmarker...");
 
-        addLog("Step 5: Setting up result handler...");
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        addLog(`Device: ${isIOS ? 'iOS' : 'Other'}, trying GPU delegate...`);
 
-        mpHands.onResults((results) => {
-          const hands = results.multiHandLandmarks;
-          if (!hands || hands.length === 0) {
-            setStatus("Camera: running • Hand: not detected");
-            gestureScaleTargetRef.current = 1.0;
-            explodeTargetRef.current = 0;
-            rotationTargetRef.current = 0;
-            return;
-          }
-
-          const hand1 = hands[0];
-          let gesture = '';
-
-          if (hands.length === 2) {
-            const hand2 = hands[1];
-            const distance = getTwoHandDistance(hand1, hand2);
-            gestureScaleTargetRef.current = lerp(0.5, 3.0, distance * 2);
-            rotationTargetRef.current = distance > 0.5 ? 1.5 : 0;
-            gesture = 'Two Hands - Rotate';
-          } else if (isOpenPalm(hand1)) {
-            explodeTargetRef.current = 1.5;
-            gestureScaleTargetRef.current = 1.8;
-            gesture = 'Open Palm - Explode';
-            addLog("Detected: Open Palm");
-          } else if (isFist(hand1)) {
-            explodeTargetRef.current = -1.0;
-            gestureScaleTargetRef.current = 0.4;
-            gesture = 'Fist - Collapse';
-            addLog("Detected: Fist");
-          } else if (isPeaceSign(hand1)) {
-            if (!rainbowMode) {
-              setRainbowMode(true);
-            }
-            gesture = 'Peace - Rainbow ON';
-            addLog("Detected: Peace Sign");
-          } else {
-            const pinchData = isPinchGesture(hand1);
-            if (pinchData.isPinch) {
-              const distNorm = clamp((pinchData.distance - 0.02) / (0.20 - 0.02), 0, 1);
-              gestureScaleTargetRef.current = lerp(0.35, 3.5, distNorm);
-              explodeTargetRef.current = 0;
-              gesture = `Pinch - Scale: ${gestureScaleTargetRef.current.toFixed(2)}`;
-            } else {
-              gestureScaleTargetRef.current = 1.0;
-              explodeTargetRef.current = 0;
-            }
-          }
-
-          setStatus(`Camera: running • ${gesture}`);
-          isProcessing = false;
-        });
-
-        addLog("Step 6: Starting frame processing loop...");
+        try {
+          handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+              delegate: "GPU"
+            },
+            runningMode: "VIDEO",
+            numHands: 2,
+            minHandDetectionConfidence: 0.5,
+            minHandPresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5
+          });
+          addLog("Step 6: HandLandmarker created with GPU!");
+        } catch (gpuError) {
+          addLog("GPU failed, trying CPU fallback...");
+          handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+            },
+            runningMode: "VIDEO",
+            numHands: 2,
+            minHandDetectionConfidence: 0.5,
+            minHandPresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5
+          });
+          addLog("Step 6: HandLandmarker created with CPU!");
+        }
         setStatus("Camera: running • Hand: not detected");
 
-        const sendFrame = async () => {
-          if (!mpHands || !videoRef.current || videoRef.current.readyState !== 4) {
-            animationId = requestAnimationFrame(sendFrame);
+        const processFrame = () => {
+          if (!handLandmarker || !videoRef.current) {
+            if (handLandmarker) {
+              animationId = requestAnimationFrame(processFrame);
+            }
             return;
           }
 
-          if (!isProcessing) {
-            isProcessing = true;
+          const video = videoRef.current;
+
+          if (video.readyState === 4 && video.currentTime !== lastVideoTime) {
+            lastVideoTime = video.currentTime;
+            frameCount++;
+
+            if (frameCount === 1) {
+              addLog("First frame processed!");
+            }
+
             try {
-              await mpHands.send({ image: videoRef.current });
+              const results: HandLandmarkerResult = handLandmarker.detectForVideo(video, performance.now());
+
+              if (!firstResultLogged) {
+                addLog(`Results received! Landmarks: ${results.landmarks?.length || 0}`);
+                firstResultLogged = true;
+              }
+
+              if (!results.landmarks || results.landmarks.length === 0) {
+                setStatus("Camera: running • Hand: not detected");
+                gestureScaleTargetRef.current = 1.0;
+                explodeTargetRef.current = 0;
+                rotationTargetRef.current = 0;
+              } else {
+                const hand1 = results.landmarks[0];
+                let gesture = '';
+
+                if (results.landmarks.length === 2) {
+                  const hand2 = results.landmarks[1];
+                  const distance = getTwoHandDistance(hand1, hand2);
+                  gestureScaleTargetRef.current = lerp(0.5, 3.0, distance * 2);
+                  rotationTargetRef.current = distance > 0.5 ? 1.5 : 0;
+                  gesture = 'Two Hands - Rotate';
+                  addLog("Detected: Two Hands");
+                } else if (isOpenPalm(hand1)) {
+                  explodeTargetRef.current = 1.5;
+                  gestureScaleTargetRef.current = 1.8;
+                  gesture = 'Open Palm - Explode';
+                  addLog("Detected: Open Palm");
+                } else if (isFist(hand1)) {
+                  explodeTargetRef.current = -1.0;
+                  gestureScaleTargetRef.current = 0.4;
+                  gesture = 'Fist - Collapse';
+                  addLog("Detected: Fist");
+                } else if (isPeaceSign(hand1)) {
+                  if (!rainbowMode) {
+                    setRainbowMode(true);
+                  }
+                  gesture = 'Peace - Rainbow ON';
+                  addLog("Detected: Peace Sign");
+                } else {
+                  const pinchData = isPinchGesture(hand1);
+                  if (pinchData.isPinch) {
+                    const distNorm = clamp((pinchData.distance - 0.02) / (0.20 - 0.02), 0, 1);
+                    gestureScaleTargetRef.current = lerp(0.35, 3.5, distNorm);
+                    explodeTargetRef.current = 0;
+                    gesture = `Pinch - Scale: ${gestureScaleTargetRef.current.toFixed(2)}`;
+                  } else {
+                    gestureScaleTargetRef.current = 1.0;
+                    explodeTargetRef.current = 0;
+                  }
+                }
+
+                setStatus(`Camera: running • ${gesture}`);
+              }
             } catch (err) {
-              addLog(`Frame processing error: ${err instanceof Error ? err.message : 'Unknown'}`);
-              isProcessing = false;
+              addLog(`Frame error: ${err instanceof Error ? err.message : 'Unknown'}`);
+              console.error("Detection error:", err);
             }
           }
 
-          animationId = requestAnimationFrame(sendFrame);
+          animationId = requestAnimationFrame(processFrame);
         };
 
-        sendFrame();
-        addLog("Step 7: Hand tracking active!");
+        addLog("Step 7: Starting detection loop...");
+        processFrame();
+        addLog("Step 8: Hand tracking active!");
 
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -688,11 +739,11 @@ export default function ParticleSystem({}: ParticleSystemProps) {
       if (animationId) {
         cancelAnimationFrame(animationId);
       }
-      if (mpHands) {
+      if (handLandmarker) {
         try {
-          mpHands.close();
+          handLandmarker.close();
         } catch (e) {
-          console.error("Error closing hands:", e);
+          console.error("Error closing hand landmarker:", e);
         }
       }
       if (videoRef.current?.srcObject) {
